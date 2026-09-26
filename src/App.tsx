@@ -1,126 +1,169 @@
+import { useEffect, useMemo, useState } from "react";
 import "./styles.css";
+import type { HoofId, HoofRecord, Horse } from "./types";
+import { loadState, saveState } from "./lib/storage";
+import { findSameDayRecord } from "./lib/selectors";
+import { uid } from "./lib/utils";
+import HomeView, { type FilterKey } from "./components/HomeView";
+import HorseDetail from "./components/HorseDetail";
+import Modal from "./components/Modal";
+import RecordForm, { type RecordDraft } from "./components/RecordForm";
 
-const project = {
-  "sourceNo": 6,
-  "id": "hxyfront-62011",
-  "port": 62011,
-  "title": "马术蹄铁修整档案",
-  "domain": "马术蹄铁",
-  "prompt": "做一个面向马术俱乐部蹄铁师的修蹄记录前端项目，可以记录马匹编号、步态问题、蹄形评估、蹄铁类型、钉位、修蹄日期、下次复查日期和照片备注。页面需要有马匹列表、复查提醒、左右前后蹄对比记录、异常步态标记和蹄铁更换历史。",
-  "palette": [
-    "#78350f",
-    "#166534",
-    "#2563eb"
-  ],
-  "metrics": [
-    "待复查",
-    "异常步态",
-    "更换蹄铁",
-    "马匹档案"
-  ],
-  "filters": [
-    "前蹄",
-    "后蹄",
-    "运动马",
-    "休养马"
-  ],
-  "fields": [
-    "马匹编号",
-    "步态问题",
-    "蹄形评估",
-    "蹄铁类型",
-    "钉位",
-    "下次复查"
-  ],
-  "records": [
-    [
-      "HORSE-18",
-      "右前蹄外侧磨耗",
-      "铝蹄铁",
-      "14天后复查"
-    ],
-    [
-      "HORSE-27",
-      "后蹄裂纹",
-      "加护蹄垫",
-      "拍照归档"
-    ],
-    [
-      "HORSE-31",
-      "步态轻微不稳",
-      "需教练复核",
-      "已标记"
-    ]
-  ]
-};
+interface FormSession {
+  horseId?: string; // 为空 = 新马
+  presetHoof?: HoofId;
+  // 每次打开换一个 token，强制表单重置为初始值
+  token: number;
+}
+
+function buildRecord(draft: RecordDraft, createdAt: number): HoofRecord {
+  return {
+    id: uid("rec"),
+    hoof: draft.hoof,
+    date: draft.date,
+    hoofShape: draft.hoofShape,
+    gaitAbnormal: draft.gaitAbnormal,
+    gaitNote: draft.gaitNote,
+    shoeType: draft.shoeType,
+    nailPosition: draft.nailPosition,
+    replaced: draft.replaced,
+    reviewDate: draft.reviewDate,
+    note: draft.note,
+    photos: draft.photos,
+    createdAt,
+  };
+}
 
 function App() {
+  const [state, setState] = useState(loadState);
+  const [view, setView] = useState<{ name: "home" } | { name: "horse"; id: string }>({ name: "home" });
+  const [filter, setFilter] = useState<FilterKey>("all");
+  const [session, setSession] = useState<FormSession | null>(null);
+  const [highlightRecordId, setHighlightRecordId] = useState<string | undefined>();
+
+  useEffect(() => {
+    saveState(state);
+  }, [state]);
+
+  const currentHorse = useMemo<Horse | undefined>(() => {
+    if (view.name !== "horse") return undefined;
+    return state.horses.find((h) => h.id === view.id);
+  }, [state, view]);
+
+  const formHorse = session?.horseId
+    ? state.horses.find((h) => h.id === session.horseId)
+    : undefined;
+
+  function openNew(horseId?: string, hoof?: HoofId) {
+    setSession({ horseId, presetHoof: hoof, token: Date.now() });
+  }
+
+  function flashRecord(id: string) {
+    setHighlightRecordId(id);
+    setTimeout(() => {
+      document.querySelector(".record-card.highlight")?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 80);
+  }
+
+  function handleSave(draft: RecordDraft) {
+    const now = Date.now();
+
+    if (draft.horseId) {
+      const record = buildRecord(draft, now);
+      setState((prev) => ({
+        horses: prev.horses.map((h) =>
+          h.id === draft.horseId ? { ...h, records: [...h.records, record] } : h
+        ),
+      }));
+      const horseId = draft.horseId;
+      setSession(null);
+      setView({ name: "horse", id: horseId });
+      flashRecord(record.id);
+      return;
+    }
+
+    // 新马匹：录入首条记录的同时建立档案
+    const horse: Horse = {
+      id: uid("h"),
+      code: draft.newCode ?? "",
+      name: draft.newName ?? "",
+      status: draft.newStatus ?? "运动马",
+      createdAt: now,
+      records: [buildRecord(draft, now)],
+    };
+    setState((prev) => ({ horses: [...prev.horses, horse] }));
+    setSession(null);
+    setView({ name: "horse", id: horse.id });
+    flashRecord(horse.records[0].id);
+  }
+
+  function handleDeleteRecord(record: HoofRecord) {
+    if (!window.confirm("确定删除这条修整记录？该蹄位的其他记录与照片不受影响。")) return;
+    setState((prev) => ({
+      horses: prev.horses.map((h) =>
+        h.records.some((r) => r.id === record.id)
+          ? { ...h, records: h.records.filter((r) => r.id !== record.id) }
+          : h
+      ),
+    }));
+    setHighlightRecordId(undefined);
+  }
+
+  function handleDeleteHorse(horse: Horse) {
+    setState((prev) => ({ horses: prev.horses.filter((h) => h.id !== horse.id) }));
+    setView({ name: "home" });
+  }
+
+  function handleRename(horse: Horse, patch: { name?: string; status?: string }) {
+    setState((prev) => ({
+      horses: prev.horses.map((h) => (h.id === horse.id ? { ...h, ...patch } : h)),
+    }));
+  }
+
   return (
     <main className="app">
-      <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
-      </section>
+      {view.name === "home" || !currentHorse ? (
+        <HomeView
+          horses={state.horses}
+          filter={filter}
+          onFilterChange={setFilter}
+          onOpenHorse={(h) => {
+            setHighlightRecordId(undefined);
+            setView({ name: "horse", id: h.id });
+          }}
+          onNewRecord={() => openNew()}
+        />
+      ) : (
+        <HorseDetail
+          horse={currentHorse}
+          highlightRecordId={highlightRecordId}
+          onBack={() => setView({ name: "home" })}
+          onAdd={(hoof) => openNew(currentHorse.id, hoof)}
+          onDeleteRecord={handleDeleteRecord}
+          onDeleteHorse={handleDeleteHorse}
+          onRename={handleRename}
+        />
+      )}
 
-      <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[28, 6, 14, 91][index] ?? 10}</strong>
-          </article>
-        ))}
-      </section>
-
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}分类</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="panel">
-        <div className="heading">
-          <div>
-            <p>近期记录</p>
-            <h2>工作台摘要</h2>
-          </div>
-          <button>导出CSV</button>
-        </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+      {session && (
+        <Modal
+          title={formHorse ? `为 ${formHorse.code} 新增修整记录` : "新增修整记录（新马匹）"}
+          subtitle="保存后立即归档到对应马匹的左右前后蹄档案"
+          onClose={() => setSession(null)}
+        >
+          <RecordForm
+            key={session.token}
+            horse={formHorse}
+            presetHoof={session.presetHoof}
+            lookupDuplicate={(hoof, date) => findSameDayRecord(formHorse, hoof, date)}
+            onSave={handleSave}
+            onCancel={() => setSession(null)}
+          />
+        </Modal>
+      )}
     </main>
   );
 }
