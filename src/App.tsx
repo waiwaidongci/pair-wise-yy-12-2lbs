@@ -1,126 +1,157 @@
+import { useEffect, useState } from "react";
 import "./styles.css";
+import type { Hoof, Horse, SubmitInput, SubmitResult, TrimmingRecord } from "./types";
+import { todayISODate } from "./dateUtils";
+import { findSameDayRecord, loadData, saveData } from "./store";
+import Dashboard from "./components/Dashboard";
+import EntryForm from "./components/EntryForm";
+import Archive from "./components/Archive";
 
-const project = {
-  "sourceNo": 6,
-  "id": "hxyfront-62011",
-  "port": 62011,
-  "title": "马术蹄铁修整档案",
-  "domain": "马术蹄铁",
-  "prompt": "做一个面向马术俱乐部蹄铁师的修蹄记录前端项目，可以记录马匹编号、步态问题、蹄形评估、蹄铁类型、钉位、修蹄日期、下次复查日期和照片备注。页面需要有马匹列表、复查提醒、左右前后蹄对比记录、异常步态标记和蹄铁更换历史。",
-  "palette": [
-    "#78350f",
-    "#166534",
-    "#2563eb"
-  ],
-  "metrics": [
-    "待复查",
-    "异常步态",
-    "更换蹄铁",
-    "马匹档案"
-  ],
-  "filters": [
-    "前蹄",
-    "后蹄",
-    "运动马",
-    "休养马"
-  ],
-  "fields": [
-    "马匹编号",
-    "步态问题",
-    "蹄形评估",
-    "蹄铁类型",
-    "钉位",
-    "下次复查"
-  ],
-  "records": [
-    [
-      "HORSE-18",
-      "右前蹄外侧磨耗",
-      "铝蹄铁",
-      "14天后复查"
-    ],
-    [
-      "HORSE-27",
-      "后蹄裂纹",
-      "加护蹄垫",
-      "拍照归档"
-    ],
-    [
-      "HORSE-31",
-      "步态轻微不稳",
-      "需教练复核",
-      "已标记"
-    ]
-  ]
-};
+type View = "home" | "entry" | "archive";
+
+function newId(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 function App() {
+  const [data, setData] = useState(loadData);
+  const [view, setView] = useState<View>("home");
+  const [selectedHorseId, setSelectedHorseId] = useState<string | null>(null);
+  const [highlightedRecordId, setHighlightedRecordId] = useState<string | null>(null);
+  const [entryHorseId, setEntryHorseId] = useState<string | undefined>(undefined);
+  const [formKey, setFormKey] = useState(0);
+  const [storageError, setStorageError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const result = saveData(data);
+    if (!result.ok) setStorageError(result.error);
+    else setStorageError(null);
+  }, [data]);
+
+  function openHorse(horseId: string, recordId?: string, _hoof?: Hoof) {
+    setSelectedHorseId(horseId);
+    setHighlightedRecordId(recordId ?? null);
+    setView("archive");
+  }
+
+  function openEntry(horseId?: string) {
+    setEntryHorseId(horseId);
+    setFormKey((k) => k + 1);
+    setView("entry");
+  }
+
+  function handleSubmit(input: SubmitInput): SubmitResult {
+    // 新马匹先建档（编号冲突在此兜底）
+    let horse: Horse | undefined = data.horses.find((h) => h.id === input.horseId);
+    if (input.isNewHorse) {
+      if (horse) {
+        return { ok: false, reason: "validation" };
+      }
+      horse = {
+        id: input.horseId,
+        name: input.newHorseName,
+        category: input.newHorseCategory,
+        createdAt: todayISODate(),
+      };
+    } else if (!horse) {
+      return { ok: false, reason: "validation" };
+    }
+
+    // 同一天同一蹄已有记录：阻止保存，让师傅先看旧记录（含旧照片、更换历史）
+    const existing = findSameDayRecord(data, input.horseId, input.hoof, input.trimmedAt);
+    if (existing) {
+      return { ok: false, reason: "duplicate", existing };
+    }
+
+    const record: TrimmingRecord = {
+      id: newId("r"),
+      horseId: input.horseId,
+      hoof: input.hoof,
+      trimmedAt: input.trimmedAt,
+      revisitAt: input.revisitAt,
+      hoofShape: input.hoofShape,
+      gaitIssue: input.gaitIssue,
+      gaitAbnormal: input.gaitAbnormal,
+      shoeType: input.shoeType,
+      shoeReplaced: input.shoeReplaced,
+      nailPositions: input.nailPositions,
+      note: input.note,
+      photos: input.photos,
+      createdAt: new Date().toISOString(),
+    };
+
+    setData((prev) => ({
+      horses: horse && !prev.horses.some((h) => h.id === horse!.id) ? [...prev.horses, horse!] : prev.horses,
+      records: [...prev.records, record],
+    }));
+    return { ok: true, recordId: record.id };
+  }
+
+  const today = todayISODate();
+
   return (
     <main className="app">
-      <section className="hero">
-        <p>{project.id} · 源提示词{project.sourceNo} · Port {project.port}</p>
-        <h1>{project.title}</h1>
-        <span>{project.prompt}</span>
-      </section>
-
-      <section className="metrics">
-        {project.metrics.map((metric: string, index: number) => (
-          <article key={metric}>
-            <small>{metric}</small>
-            <strong>{[28, 6, 14, 91][index] ?? 10}</strong>
-          </article>
-        ))}
-      </section>
-
-      <section className="workspace">
-        <aside className="panel">
-          <h2>{project.domain}分类</h2>
-          <div className="chips">
-            {project.filters.map((item: string) => (
-              <button key={item}>{item}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel form-panel">
-          <div className="heading">
-            <div>
-              <p>专业字段</p>
-              <h2>新增记录</h2>
-            </div>
-            <button className="primary">保存记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="panel">
-        <div className="heading">
+      <header className="topbar">
+        <div className="brand" onClick={() => setView("home")}>
+          <span className="brand-mark">蹄</span>
           <div>
-            <p>近期记录</p>
-            <h2>工作台摘要</h2>
+            <h1>马术蹄铁修整档案</h1>
+            <small>蹄铁师工作台 · 按马匹四蹄归档</small>
           </div>
-          <button>导出CSV</button>
         </div>
-        <div className="records">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")}>
-              <b>{String(index + 1).padStart(2, "0")}</b>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
+        <nav className="nav">
+          <button className={view === "home" ? "nav-on" : ""} onClick={() => setView("home")}>
+            首页 · 复查提醒
+          </button>
+          <button
+            className={view === "entry" ? "nav-on" : ""}
+            onClick={() => {
+              if (view !== "entry") openEntry(entryHorseId);
+            }}
+          >
+            录入修整
+          </button>
+          <button className={view === "archive" ? "nav-on" : ""} onClick={() => setView("archive")}>
+            马匹档案
+          </button>
+        </nav>
+      </header>
+
+      {view === "home" && (
+        <Dashboard data={data} today={today} onOpenHorse={openHorse} onNewRecord={openEntry} />
+      )}
+
+      {view === "entry" && (
+        <EntryForm
+          key={formKey}
+          data={data}
+          today={today}
+          initialHorseId={entryHorseId}
+          onSubmit={handleSubmit}
+          onOpenHorse={openHorse}
+        />
+      )}
+
+      {view === "archive" && (
+        <Archive
+          data={data}
+          today={today}
+          selectedHorseId={selectedHorseId}
+          highlightedRecordId={highlightedRecordId}
+          onSelectHorse={(id) => {
+            setSelectedHorseId(id);
+            setHighlightedRecordId(null);
+          }}
+          onNewRecord={openEntry}
+        />
+      )}
+
+      {storageError && (
+        <div className="storage-toast" role="alert">
+          <strong>保存到本地失败：</strong>
+          {storageError}
         </div>
-      </section>
+      )}
     </main>
   );
 }
